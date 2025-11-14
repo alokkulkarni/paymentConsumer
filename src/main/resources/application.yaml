@@ -1,0 +1,44 @@
+spring:
+  application:
+    name: paymentConsumer
+  
+  # Jackson Configuration
+  jackson:
+    default-property-inclusion: non_null
+    serialization:
+      write-dates-as-timestamps: false
+    time-zone: ${TIMEZONE:UTC}
+
+# Server Configuration
+server:
+  port: ${SERVER_PORT:8082}
+  shutdown: graceful
+  compression:
+    enabled: true
+    mime-types: text/html,text/xml,text/plain,text/css,application/json,application/javascript
+
+# Management/Actuator Configuration
+management:
+  endpoints:
+    web:
+      exposure:
+        include: ${ACTUATOR_ENDPOINTS:health,info,metrics,prometheus}
+      base-path: /actuator
+  endpoint:
+    health:
+      show-details: ${HEALTH_DETAILS:when-authorized}
+      probes:
+        enabled: true
+  prometheus:
+    metrics:
+      export:
+        enabled: ${PROMETHEUS_ENABLED:true}
+        
+# Logging Configuration
+logging:
+  level:
+    root: ${LOG_LEVEL_ROOT:INFO}
+    "[com.alok.payment.paymentConsumer]": ${LOG_LEVEL_APP:INFO}
+    "[org.springframework.web]": ${LOG_LEVEL_SPRING_WEB:INFO}
+  pattern:
+    console: "%d{yyyy-MM-dd HH:mm:ss} - %msg%n"
