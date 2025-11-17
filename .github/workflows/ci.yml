@@ -51,7 +51,6 @@ jobs:
 
       - name: Download Maven Dependencies
         if: steps.cache-maven.outputs.cache-hit != 'true'
-        working-directory: paymentConsumer
         run: |
           ./mvnw dependency:go-offline -B
           echo "✅ Maven dependencies downloaded and cached"
@@ -67,32 +66,27 @@ jobs:
           echo "timestamp=$(date +%Y%m%d-%H%M%S)" >> $GITHUB_OUTPUT
 
       - name: Run Unit Tests
-        working-directory: paymentConsumer
         run: |
           ./mvnw clean test -B
           echo "✅ Unit tests completed"
 
       - name: Generate Unit Test Coverage Report
-        working-directory: paymentConsumer
         run: |
           ./mvnw jacoco:report -B
           echo "✅ Unit test coverage report generated"
 
       - name: Run Integration Tests with TestContainers
-        working-directory: paymentConsumer
         run: |
           ./mvnw failsafe:integration-test -Dgroups="!bdd" -B
           echo "✅ Integration tests completed"
 
       - name: Complete Integration Tests and Generate Coverage
-        working-directory: paymentConsumer
         run: |
           ./mvnw failsafe:verify -Djacoco.skip.check=true -B
           ./mvnw jacoco:report-integration -B
           echo "✅ Integration test coverage report generated"
 
       - name: Backup Integration Coverage
-        working-directory: paymentConsumer
         run: |
           # Backup integration-only coverage before BDD tests
           cp target/jacoco-it.exec target/jacoco-it-only.exec 2>/dev/null || true
@@ -100,7 +94,6 @@ jobs:
           echo "✅ Integration coverage backed up"
 
       - name: Run BDD Tests with TestContainers
-        working-directory: paymentConsumer
         run: |
           # Clean previous BDD test results but keep coverage data
           rm -rf target/failsafe-reports/*Cucumber* 2>/dev/null || true
@@ -108,7 +101,6 @@ jobs:
           echo "✅ BDD tests completed"
 
       - name: Complete BDD Tests and Generate Coverage
-        working-directory: paymentConsumer
         run: |
           # Save BDD coverage separately
           cp target/jacoco-it.exec target/jacoco-bdd.exec 2>/dev/null || true
@@ -118,7 +110,6 @@ jobs:
           echo "✅ BDD test coverage report generated"
 
       - name: Generate Aggregate Coverage Report
-        working-directory: paymentConsumer
         run: |
           # Merge all coverage data
           ./mvnw jacoco:merge@merge-results -B
@@ -126,7 +117,6 @@ jobs:
           echo "✅ Aggregate coverage report generated"
 
       - name: Create coverage artifacts directory
-        working-directory: paymentConsumer
         run: |
           mkdir -p coverage-reports/unit
           mkdir -p coverage-reports/integration
@@ -186,7 +176,6 @@ jobs:
 
       - name: Extract Coverage Metrics
         id: coverage
-        working-directory: paymentConsumer
         run: |
           # Function to extract coverage from XML
           extract_coverage() {
@@ -232,7 +221,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: coverage-reports-${{ steps.metadata.outputs.app_name }}-run${{ steps.metadata.outputs.run_id }}-pr${{ steps.metadata.outputs.pr_number }}
-          path: paymentConsumer/coverage-reports/
+          path: coverage-reports/
           retention-days: 30
 
       - name: Upload Test Reports
@@ -241,8 +230,8 @@ jobs:
         with:
           name: test-reports-${{ steps.metadata.outputs.app_name }}-run${{ steps.metadata.outputs.run_id }}-pr${{ steps.metadata.outputs.pr_number }}
           path: |
-            paymentConsumer/target/surefire-reports/
-            paymentConsumer/target/failsafe-reports/
+            target/surefire-reports/
+            target/failsafe-reports/
           retention-days: 30
 
       - name: Comment PR with Coverage
@@ -342,7 +331,6 @@ jobs:
             });
 
       - name: Build Application
-        working-directory: paymentConsumer
         run: |
           ./mvnw package -DskipTests -B
           echo "✅ Application built successfully"
@@ -372,8 +360,8 @@ jobs:
       - name: Build and push Docker image
         uses: docker/build-push-action@v5
         with:
-          context: ./paymentConsumer
-          file: ./paymentConsumer/Dockerfile
+          context: .
+          file: ./Dockerfile
           platforms: linux/amd64,linux/arm64
           push: true
           tags: ${{ steps.docker_meta.outputs.tags }}
