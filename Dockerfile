@@ -63,6 +63,7 @@ ENV JAVA_OPTS="-XX:+UseContainerSupport -XX:MaxRAMPercentage=75.0 -XX:+ExitOnOut
 ENV BENEFICIARIES_SERVICE_URL="http://beneficiaries:8080" \
     PAYMENT_PROCESSOR_SERVICE_URL="http://paymentprocessor:8081" \
     SERVER_PORT="8082" \
+    SPRING_AUTOCONFIGURE_EXCLUDE="org.springframework.boot.autoconfigure.jdbc.DataSourceAutoConfiguration,org.springframework.boot.autoconfigure.jdbc.DataSourceTransactionManagerAutoConfiguration" \
     LOG_LEVEL_ROOT="INFO" \
     LOG_LEVEL_APP="INFO" \
     HEALTH_DETAILS="always" \
