@@ -29,6 +29,9 @@ LABEL maintainer="alok.kulkarni"
 LABEL service="paymentConsumer"
 LABEL version="0.0.1-SNAPSHOT"
 
+# Install curl for health checks
+RUN apt-get update && apt-get install -y curl && rm -rf /var/lib/apt/lists/*
+
 # Create non-root user for security
 RUN groupadd -r spring && useradd -r -g spring spring
 
@@ -46,15 +49,24 @@ RUN chown -R spring:spring /app
 # Switch to non-root user
 USER spring:spring
 
-# Expose the application port (default Spring Boot port)
-EXPOSE 8080
+# Expose the application port
+EXPOSE 8082
 
 # Health check
 HEALTHCHECK --interval=30s --timeout=3s --start-period=40s --retries=3 \
-  CMD curl -f http://localhost:8080/actuator/health || exit 1
+  CMD curl -f http://localhost:8082/actuator/health || exit 1
 
 # Set JVM options for containerized environments
 ENV JAVA_OPTS="-XX:+UseContainerSupport -XX:MaxRAMPercentage=75.0 -XX:+ExitOnOutOfMemoryError"
+
+# Environment variables for external service connections (can be overridden at runtime)
+ENV BENEFICIARIES_SERVICE_URL="http://beneficiaries:8080" \
+    PAYMENT_PROCESSOR_SERVICE_URL="http://paymentprocessor:8081" \
+    SERVER_PORT="8082" \
+    LOG_LEVEL_ROOT="INFO" \
+    LOG_LEVEL_APP="INFO" \
+    HEALTH_DETAILS="always" \
+    TIMEZONE="UTC"
 
 # Run the application
 ENTRYPOINT ["sh", "-c", "java $JAVA_OPTS -cp .:./lib/* com.alok.payment.paymentConsumer.PaymentConsumerApplication"]

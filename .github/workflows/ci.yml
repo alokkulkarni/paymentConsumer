@@ -1,0 +1,432 @@
+name: CI Pipeline - Payment Consumer
+
+on:
+  pull_request:
+    branches:
+      - main
+      - '**'
+  push:
+    branches:
+      - main
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}/paymentconsumer
+  JAVA_VERSION: '21'
+  JAVA_DISTRIBUTION: 'temurin'
+
+jobs:
+  test-and-build:
+    name: Test, Build & Package
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+      pull-requests: write
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up JDK ${{ env.JAVA_VERSION }}
+        uses: actions/setup-java@v4
+        with:
+          java-version: ${{ env.JAVA_VERSION }}
+          distribution: ${{ env.JAVA_DISTRIBUTION }}
+          cache: 'maven'
+
+      - name: Restore Maven Dependencies
+        id: cache-maven
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.m2/repository
+            !~/.m2/repository/com/alok
+          key: ${{ runner.os }}-maven-paymentconsumer-${{ hashFiles('**/pom.xml') }}
+          restore-keys: |
+            ${{ runner.os }}-maven-paymentconsumer-
+            ${{ runner.os }}-maven-
+
+      - name: Download Maven Dependencies
+        if: steps.cache-maven.outputs.cache-hit != 'true'
+        working-directory: paymentConsumer
+        run: |
+          ./mvnw dependency:go-offline -B
+          echo "✅ Maven dependencies downloaded and cached"
+
+      - name: Generate run metadata
+        id: metadata
+        run: |
+          echo "run_id=${{ github.run_id }}" >> $GITHUB_OUTPUT
+          echo "run_number=${{ github.run_number }}" >> $GITHUB_OUTPUT
+          echo "pr_number=${{ github.event.pull_request.number || 'none' }}" >> $GITHUB_OUTPUT
+          echo "sha_short=$(git rev-parse --short HEAD)" >> $GITHUB_OUTPUT
+          echo "app_name=paymentConsumer" >> $GITHUB_OUTPUT
+          echo "timestamp=$(date +%Y%m%d-%H%M%S)" >> $GITHUB_OUTPUT
+
+      - name: Run Unit Tests
+        working-directory: paymentConsumer
+        run: |
+          ./mvnw clean test -B
+          echo "✅ Unit tests completed"
+
+      - name: Generate Unit Test Coverage Report
+        working-directory: paymentConsumer
+        run: |
+          ./mvnw jacoco:report -B
+          echo "✅ Unit test coverage report generated"
+
+      - name: Run Integration Tests with TestContainers
+        working-directory: paymentConsumer
+        run: |
+          ./mvnw failsafe:integration-test -Dgroups="!bdd" -B
+          echo "✅ Integration tests completed"
+
+      - name: Complete Integration Tests and Generate Coverage
+        working-directory: paymentConsumer
+        run: |
+          ./mvnw failsafe:verify -Djacoco.skip.check=true -B
+          ./mvnw jacoco:report-integration -B
+          echo "✅ Integration test coverage report generated"
+
+      - name: Backup Integration Coverage
+        working-directory: paymentConsumer
+        run: |
+          # Backup integration-only coverage before BDD tests
+          cp target/jacoco-it.exec target/jacoco-it-only.exec 2>/dev/null || true
+          cp -r target/site/jacoco-it target/site/jacoco-it-only 2>/dev/null || true
+          echo "✅ Integration coverage backed up"
+
+      - name: Run BDD Tests with TestContainers
+        working-directory: paymentConsumer
+        run: |
+          # Clean previous BDD test results but keep coverage data
+          rm -rf target/failsafe-reports/*Cucumber* 2>/dev/null || true
+          ./mvnw failsafe:integration-test -Dtest=CucumberTestRunner -B
+          echo "✅ BDD tests completed"
+
+      - name: Complete BDD Tests and Generate Coverage
+        working-directory: paymentConsumer
+        run: |
+          # Save BDD coverage separately
+          cp target/jacoco-it.exec target/jacoco-bdd.exec 2>/dev/null || true
+          # Generate BDD-specific report
+          ./mvnw jacoco:report-integration -B
+          cp -r target/site/jacoco-it target/site/jacoco-bdd 2>/dev/null || true
+          echo "✅ BDD test coverage report generated"
+
+      - name: Generate Aggregate Coverage Report
+        working-directory: paymentConsumer
+        run: |
+          # Merge all coverage data
+          ./mvnw jacoco:merge@merge-results -B
+          ./mvnw jacoco:report@aggregate-report -Djacoco.skip.check=true -B
+          echo "✅ Aggregate coverage report generated"
+
+      - name: Create coverage artifacts directory
+        working-directory: paymentConsumer
+        run: |
+          mkdir -p coverage-reports/unit
+          mkdir -p coverage-reports/integration
+          mkdir -p coverage-reports/bdd
+          mkdir -p coverage-reports/aggregate
+          
+          # Copy Unit Test Coverage
+          if [ -d "target/site/jacoco" ]; then
+            cp -r target/site/jacoco coverage-reports/unit/
+            cp target/jacoco.exec coverage-reports/unit/jacoco.exec 2>/dev/null || true
+            echo "✅ Unit test coverage copied"
+          fi
+          
+          # Copy Integration Test Coverage (without BDD)
+          if [ -d "target/site/jacoco-it-only" ]; then
+            cp -r target/site/jacoco-it-only coverage-reports/integration/
+            cp target/jacoco-it-only.exec coverage-reports/integration/jacoco-it.exec 2>/dev/null || true
+            echo "✅ Integration test coverage copied"
+          fi
+          
+          # Copy BDD Test Coverage
+          if [ -d "target/site/jacoco-bdd" ]; then
+            cp -r target/site/jacoco-bdd coverage-reports/bdd/
+            cp target/jacoco-bdd.exec coverage-reports/bdd/jacoco-bdd.exec 2>/dev/null || true
+            echo "✅ BDD test coverage copied"
+          fi
+          
+          # Copy Aggregate Coverage
+          if [ -d "target/site/jacoco-aggregate" ]; then
+            cp -r target/site/jacoco-aggregate coverage-reports/aggregate/
+            cp target/jacoco-aggregate.exec coverage-reports/aggregate/jacoco-aggregate.exec 2>/dev/null || true
+            echo "✅ Aggregate coverage copied"
+          fi
+          
+          # Create metadata file
+          cat > coverage-reports/metadata.json << EOF
+          {
+            "app_name": "${{ steps.metadata.outputs.app_name }}",
+            "run_id": "${{ steps.metadata.outputs.run_id }}",
+            "run_number": "${{ steps.metadata.outputs.run_number }}",
+            "pr_number": "${{ steps.metadata.outputs.pr_number }}",
+            "commit_sha": "${{ github.sha }}",
+            "commit_sha_short": "${{ steps.metadata.outputs.sha_short }}",
+            "timestamp": "${{ steps.metadata.outputs.timestamp }}",
+            "branch": "${{ github.head_ref || github.ref_name }}",
+            "actor": "${{ github.actor }}",
+            "test_phases": {
+              "unit": "Unit Tests",
+              "integration": "Integration Tests (TestContainers)",
+              "bdd": "BDD Tests (Cucumber with TestContainers)",
+              "aggregate": "All Tests Combined"
+            }
+          }
+          EOF
+          
+          echo "✅ Coverage artifacts prepared for all test phases"
+
+      - name: Extract Coverage Metrics
+        id: coverage
+        working-directory: paymentConsumer
+        run: |
+          # Function to extract coverage from XML
+          extract_coverage() {
+            local xml_file=$1
+            local prefix=$2
+            
+            if [ -f "$xml_file" ]; then
+              local inst_missed=$(grep -oP '(?<=<counter type="INSTRUCTION" missed=")[^"]*' "$xml_file" | head -1)
+              local inst_covered=$(grep -oP '(?<=<counter type="INSTRUCTION" missed="[^"]*" covered=")[^"]*' "$xml_file" | head -1)
+              local branch_missed=$(grep -oP '(?<=<counter type="BRANCH" missed=")[^"]*' "$xml_file" | head -1)
+              local branch_covered=$(grep -oP '(?<=<counter type="BRANCH" missed="[^"]*" covered=")[^"]*' "$xml_file" | head -1)
+              local line_missed=$(grep -oP '(?<=<counter type="LINE" missed=")[^"]*' "$xml_file" | head -1)
+              local line_covered=$(grep -oP '(?<=<counter type="LINE" missed="[^"]*" covered=")[^"]*' "$xml_file" | head -1)
+              
+              local inst_total=$((inst_missed + inst_covered))
+              local branch_total=$((branch_missed + branch_covered))
+              local line_total=$((line_missed + line_covered))
+              
+              local inst_pct=$(awk "BEGIN {printf \"%.2f\", $inst_total > 0 ? ($inst_covered / $inst_total) * 100 : 0}")
+              local branch_pct=$(awk "BEGIN {printf \"%.2f\", $branch_total > 0 ? ($branch_covered / $branch_total) * 100 : 0}")
+              local line_pct=$(awk "BEGIN {printf \"%.2f\", $line_total > 0 ? ($line_covered / $line_total) * 100 : 0}")
+              
+              echo "${prefix}_instruction_coverage=$inst_pct" >> $GITHUB_OUTPUT
+              echo "${prefix}_branch_coverage=$branch_pct" >> $GITHUB_OUTPUT
+              echo "${prefix}_line_coverage=$line_pct" >> $GITHUB_OUTPUT
+              
+              echo "📊 ${prefix} Coverage: Instructions: ${inst_pct}% | Branches: ${branch_pct}% | Lines: ${line_pct}%"
+            else
+              echo "⚠️ No ${prefix} coverage report found at: $xml_file"
+              echo "${prefix}_instruction_coverage=0" >> $GITHUB_OUTPUT
+              echo "${prefix}_branch_coverage=0" >> $GITHUB_OUTPUT
+              echo "${prefix}_line_coverage=0" >> $GITHUB_OUTPUT
+            fi
+          }
+          
+          # Extract coverage for each phase
+          extract_coverage "target/site/jacoco/jacoco.xml" "unit"
+          extract_coverage "coverage-reports/integration/jacoco-it-only/jacoco.xml" "integration"
+          extract_coverage "coverage-reports/bdd/jacoco-bdd/jacoco.xml" "bdd"
+          extract_coverage "target/site/jacoco-aggregate/jacoco.xml" "aggregate"
+
+      - name: Upload Coverage Reports
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-reports-${{ steps.metadata.outputs.app_name }}-run${{ steps.metadata.outputs.run_id }}-pr${{ steps.metadata.outputs.pr_number }}
+          path: paymentConsumer/coverage-reports/
+          retention-days: 30
+
+      - name: Upload Test Reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-reports-${{ steps.metadata.outputs.app_name }}-run${{ steps.metadata.outputs.run_id }}-pr${{ steps.metadata.outputs.pr_number }}
+          path: |
+            paymentConsumer/target/surefire-reports/
+            paymentConsumer/target/failsafe-reports/
+          retention-days: 30
+
+      - name: Comment PR with Coverage
+        if: github.event_name == 'pull_request'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const coverage = {
+              unit: {
+                instruction: '${{ steps.coverage.outputs.unit_instruction_coverage }}',
+                branch: '${{ steps.coverage.outputs.unit_branch_coverage }}',
+                line: '${{ steps.coverage.outputs.unit_line_coverage }}'
+              },
+              integration: {
+                instruction: '${{ steps.coverage.outputs.integration_instruction_coverage }}',
+                branch: '${{ steps.coverage.outputs.integration_branch_coverage }}',
+                line: '${{ steps.coverage.outputs.integration_line_coverage }}'
+              },
+              bdd: {
+                instruction: '${{ steps.coverage.outputs.bdd_instruction_coverage }}',
+                branch: '${{ steps.coverage.outputs.bdd_branch_coverage }}',
+                line: '${{ steps.coverage.outputs.bdd_line_coverage }}'
+              },
+              aggregate: {
+                instruction: '${{ steps.coverage.outputs.aggregate_instruction_coverage }}',
+                branch: '${{ steps.coverage.outputs.aggregate_branch_coverage }}',
+                line: '${{ steps.coverage.outputs.aggregate_line_coverage }}'
+              }
+            };
+            
+            const metadata = {
+              appName: '${{ steps.metadata.outputs.app_name }}',
+              runId: '${{ steps.metadata.outputs.run_id }}',
+              prNumber: '${{ steps.metadata.outputs.pr_number }}',
+              sha: '${{ steps.metadata.outputs.sha_short }}',
+              timestamp: '${{ steps.metadata.outputs.timestamp }}'
+            };
+            
+            const comment = `## 🧪 Test Coverage Report - Payment Consumer
+            
+            **Application:** ${metadata.appName}  
+            **Run ID:** ${metadata.runId}  
+            **PR:** #${metadata.prNumber}  
+            **Commit:** ${metadata.sha}  
+            **Timestamp:** ${metadata.timestamp}
+            
+            ### Coverage by Test Phase
+            
+            #### 📝 Unit Tests
+            | Metric | Coverage |
+            |--------|----------|
+            | Instructions | ${coverage.unit.instruction}% |
+            | Branches | ${coverage.unit.branch}% |
+            | Lines | ${coverage.unit.line}% |
+            
+            #### 🔗 Integration Tests (TestContainers)
+            | Metric | Coverage |
+            |--------|----------|
+            | Instructions | ${coverage.integration.instruction}% |
+            | Branches | ${coverage.integration.branch}% |
+            | Lines | ${coverage.integration.line}% |
+            
+            #### 🥒 BDD Tests (Cucumber + TestContainers)
+            | Metric | Coverage |
+            |--------|----------|
+            | Instructions | ${coverage.bdd.instruction}% |
+            | Branches | ${coverage.bdd.branch}% |
+            | Lines | ${coverage.bdd.line}% |
+            
+            #### 📊 Aggregate Coverage (All Tests)
+            | Metric | Coverage |
+            |--------|----------|
+            | Instructions | ${coverage.aggregate.instruction}% |
+            | Branches | ${coverage.aggregate.branch}% |
+            | Lines | ${coverage.aggregate.line}% |
+            
+            ### Test Phases Executed
+            - ✅ Unit Tests
+            - ✅ Integration Tests (TestContainers with real services)
+            - ✅ BDD Tests (Cucumber with TestContainers)
+            
+            ### TestContainers Architecture
+            - 🐘 PostgreSQL (Accounts Database)
+            - 🐘 PostgreSQL (Beneficiaries Database)
+            - 🔴 Redis (Caching)
+            - 🚀 Beneficiaries Service
+            - 💰 Payment Processor Service
+            
+            [📥 Download Coverage Reports](https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }})
+            `;
+            
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: comment
+            });
+
+      - name: Build Application
+        working-directory: paymentConsumer
+        run: |
+          ./mvnw package -DskipTests -B
+          echo "✅ Application built successfully"
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract Docker metadata
+        id: docker_meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          tags: |
+            type=ref,event=branch
+            type=ref,event=pr
+            type=sha,prefix={{branch}}-
+            type=raw,value=run-${{ github.run_id }}
+            type=raw,value=latest,enable=${{ github.ref == format('refs/heads/{0}', 'main') }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build and push Docker image
+        uses: docker/build-push-action@v5
+        with:
+          context: ./paymentConsumer
+          file: ./paymentConsumer/Dockerfile
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.docker_meta.outputs.tags }}
+          labels: |
+            ${{ steps.docker_meta.outputs.labels }}
+            org.opencontainers.image.app.name=${{ steps.metadata.outputs.app_name }}
+            org.opencontainers.image.run.id=${{ steps.metadata.outputs.run_id }}
+            org.opencontainers.image.pr.number=${{ steps.metadata.outputs.pr_number }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          build-args: |
+            BUILD_DATE=${{ steps.metadata.outputs.timestamp }}
+            VCS_REF=${{ github.sha }}
+
+      - name: Generate Docker image summary
+        run: |
+          echo "## 🐳 Docker Image Published - Payment Consumer" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Repository:** \`${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "**Platforms:** \`linux/amd64\`, \`linux/arm64\`" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Tags:" >> $GITHUB_STEP_SUMMARY
+          echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
+          echo "${{ steps.docker_meta.outputs.tags }}" >> $GITHUB_STEP_SUMMARY
+          echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Pull command:" >> $GITHUB_STEP_SUMMARY
+          echo "\`\`\`bash" >> $GITHUB_STEP_SUMMARY
+          echo "docker pull ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:run-${{ github.run_id }}" >> $GITHUB_STEP_SUMMARY
+          echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
+
+      - name: Generate Job Summary
+        if: always()
+        run: |
+          echo "## 📋 CI Pipeline Summary - Payment Consumer" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Application:** ${{ steps.metadata.outputs.app_name }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Run ID:** ${{ steps.metadata.outputs.run_id }}" >> $GITHUB_STEP_SUMMARY
+          echo "**PR Number:** ${{ steps.metadata.outputs.pr_number }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Commit:** ${{ steps.metadata.outputs.sha_short }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Branch:** ${{ github.head_ref || github.ref_name }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### ✅ Completed Tasks" >> $GITHUB_STEP_SUMMARY
+          echo "- Unit Tests Executed" >> $GITHUB_STEP_SUMMARY
+          echo "- Integration Tests with TestContainers" >> $GITHUB_STEP_SUMMARY
+          echo "- BDD Tests with Cucumber & TestContainers" >> $GITHUB_STEP_SUMMARY
+          echo "- Coverage Reports Generated (4 separate phases)" >> $GITHUB_STEP_SUMMARY
+          echo "- Application Built" >> $GITHUB_STEP_SUMMARY
+          echo "- Docker Image Created and Pushed to GHCR" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### 🐳 TestContainers Used" >> $GITHUB_STEP_SUMMARY
+          echo "- PostgreSQL (Accounts Database)" >> $GITHUB_STEP_SUMMARY
+          echo "- PostgreSQL (Beneficiaries Database)" >> $GITHUB_STEP_SUMMARY
+          echo "- Redis (Caching)" >> $GITHUB_STEP_SUMMARY
+          echo "- Beneficiaries Service Container" >> $GITHUB_STEP_SUMMARY
+          echo "- Payment Processor Service Container" >> $GITHUB_STEP_SUMMARY
